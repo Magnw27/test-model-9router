@@ -1,7 +1,4 @@
-"""
-Helper untuk memanggil model lewat 9Router berdasarkan Model ID.
-Menggunakan library LangChain ChatOpenAI yang kompatibel dengan OpenAI API.
-"""
+"""OmniRoute OpenAI-compatible model client."""
 
 import os
 from datetime import datetime, timezone
@@ -12,25 +9,22 @@ from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
-BASE_URL = os.getenv("NINEROUTER_BASE_URL")
-API_KEY = os.getenv("NINEROUTER_API_KEY")
+BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://localhost:20128/v1").rstrip("/")
+API_KEY = os.getenv("OMNIROUTE_API_KEY")
 
 
 def get_llm(model_id: str, temperature: float = 0, read_timeout: float = 120.0) -> ChatOpenAI:
-    """Menginisialisasi klien ChatOpenAI untuk model_id tertentu via 9Router.
-    read_timeout = batas tunggu jawaban (detik). Default 120 = batas gagal 2 menit.
-    """
-    if not BASE_URL or not API_KEY:
-        raise RuntimeError(
-            "NINEROUTER_BASE_URL atau NINEROUTER_API_KEY belum terisi di .env"
-        )
+    """Create a LangChain ChatOpenAI client routed through OmniRoute."""
+    if not API_KEY:
+        raise RuntimeError("OMNIROUTE_API_KEY belum terisi di .env")
+
     return ChatOpenAI(
         base_url=BASE_URL,
         api_key=API_KEY,
         model=model_id,
         temperature=temperature,
         timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=10.0, pool=10.0),
-        max_retries=0,  # retry diatur secara manual oleh skrip penguji
+        max_retries=0,
     )
 
 
