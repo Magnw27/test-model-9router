@@ -1,5 +1,5 @@
 """
-test_all_models.py -- Uji ketersediaan dan kapabilitas model di 9Router.
+test_all_models.py -- Uji ketersediaan dan kapabilitas model di OmniRoute.
 
 Fitur:
 1. Waktu respons dikelompokkan: FAST (<=15s) / NORMAL (<=45s) / SLOW (>45s). Lebih dari 2 menit = TIMEOUT.
@@ -14,7 +14,7 @@ Fitur:
    Laporan yang mudah dibaca ditulis di test_results.txt.
 
 Cara pakai:
-  python list_models.py              (ambil daftar model terbaru dari 9Router)
+  python list_models.py              (ambil daftar model terbaru dari OmniRoute)
   python test_all_models.py          (uji yang belum diuji + ulang yang TRANSIENT)
   python test_all_models.py --all    (uji ulang SEMUA model)
   python test_all_models.py --only kr,ag     (hanya uji provider tertentu)
@@ -327,7 +327,7 @@ def run_pool(items, fn, workers, on_result):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Uji ketersediaan dan kapabilitas model 9Router")
+    ap = argparse.ArgumentParser(description="Uji ketersediaan dan kapabilitas model OmniRoute")
     ap.add_argument("--all", action="store_true", help="uji ulang semua model (bukan hanya yang belum/transient)")
     ap.add_argument("--only", default="", help="provider yang diuji, pisah koma (contoh: kr,ag)")
     ap.add_argument("--skip", default="", help="provider yang dilewati, pisah koma")
@@ -353,7 +353,7 @@ def main():
     meta["seen"] = sorted(current)
     if vanished:
         print(f"PERHATIAN: {len(vanished)} model pernah ada tapi sekarang TIDAK ada di {LIST_FILE} "
-              f"(contoh: {', '.join(sorted(vanished)[:5])}). Bukan gagal tes, tapi hilang dari daftar 9Router.\n")
+              f"(contoh: {', '.join(sorted(vanished)[:5])}). Bukan gagal tes, tapi hilang dari daftar OmniRoute.\n")
 
     models_state = state["models"]
     todo = []
