@@ -1,8 +1,8 @@
-# 9Router Model Tester & Benchmark
+# OmniRoute Model Tester & Benchmark
 
-An automatic Python toolkit for scanning, testing availability, measuring latency (*benchmark*), and verifying *tool-calling* (function calling) capabilities of all AI models connected to an account on [9Router](https://9router.ai).
+An automatic Python toolkit for scanning, testing availability, measuring latency (*benchmark*), and verifying *tool-calling* (function calling) capabilities of all AI models connected to an account on [OmniRoute](https://omniroute.ai).
 
-Very useful before creating *Combo* / *Fallback List* configurations in 9Router, so you can know exactly which models are actually active, stable, fast, and ready to be used in your application pipeline or AI agent.
+Very useful before creating *Combo* / *Fallback List* configurations in OmniRoute, so you can know exactly which models are actually active, stable, fast, and ready to be used in your application pipeline or AI agent.
 
 ---
 
@@ -38,8 +38,8 @@ Very useful before creating *Combo* / *Fallback List* configurations in 9Router,
 ## 📁 File Structure
 
 ```text
-├── list_models.py       # Retrieves all active Model IDs from 9Router
-├── llm_client.py        # Model calling wrapper (LangChain ChatOpenAI via 9Router)
+├── list_models.py       # Retrieves all active Model IDs from OmniRoute
+├── llm_client.py        # Model calling wrapper (LangChain ChatOpenAI via OmniRoute)
 ├── test_all_models.py   # Main testing script (parallel testing, benchmarking, & analysis)
 ├── requirements.txt     # List of required Python libraries
 ├── .env.example         # URL and API Key configuration template
@@ -59,7 +59,7 @@ To ensure the testing process runs smoothly without issues, follow this order:
                   │                              │
                   ▼                              ▼
 
-[3. Make Sure 9Router Is Running] ---> [4. Run list_models.py]
+[3. Make Sure OmniRoute Is Running] ---> [4. Run list_models.py]
                                                │
                                                ▼
                                     [5. Run test_all_models.py]
@@ -70,9 +70,9 @@ To ensure the testing process runs smoothly without issues, follow this order:
 
 1. **Environment Setup**: Create a virtual environment and install the libraries from `requirements.txt`.
 
-2. **Credential Configuration**: Copy `.env.example` to `.env` and enter your 9Router API Key.
+2. **Credential Configuration**: Copy `.env.example` to `.env` and enter your OmniRoute API Key.
 
-3. **Start 9Router**: Make sure the local 9Router application or server is running.
+3. **Start OmniRoute**: Make sure the local OmniRoute application or server is running.
 
 4. **Retrieve Model List**: Run `python list_models.py` to download the latest model list into `all_models.txt`.
 
@@ -86,9 +86,9 @@ To ensure the testing process runs smoothly without issues, follow this order:
 
 1. **Python 3.10 or newer** ([Download Python](https://www.python.org/downloads/)).
 
-2. **9Router application** is running on your local computer or server.
+2. **OmniRoute application** is running on your local computer or server.
 
-3. **Your own 9Router API Key** (can be found in the 9Router dashboard).
+3. **Your own OmniRoute API Key** (can be found in the OmniRoute dashboard).
 
 ---
 
@@ -135,15 +135,15 @@ cp .env.example .env
 Open the `.env` file with a text editor, then adjust the URL and API key:
 
 ```env
-NINEROUTER_BASE_URL=http://localhost:20128/v1
-NINEROUTER_API_KEY=enter_your_9router_api_key_here
+OMNIROUTE_BASE_URL=http://localhost:20128/v1
+OMNIROUTE_API_KEY=enter_your_omniroute_api_key_here
 ```
 
 > ⚠️ **SECURITY WARNING**: Never share or upload the `.env` file publicly/to Git because it contains your personal API key.
 
 ### Step 3: Retrieve the Latest Model List
 
-Run this command to retrieve all models available in your 9Router account:
+Run this command to retrieve all models available in your OmniRoute account:
 
 ```bash
 python list_models.py
@@ -325,7 +325,7 @@ The model is then instructed:
 
 After testing has run, you will see these files in the directory:
 
-1. **`all_models.txt`**: Raw list of all models retrieved from 9Router.
+1. **`all_models.txt`**: Raw list of all models retrieved from OmniRoute.
 2. **`test_state.json`**: Complete JSON-formatted status database. This file stores latency, original error history, test timestamps, and tool capabilities.
 3. **`test_results.txt`**: A concise report that separates models by status and speed.
 
