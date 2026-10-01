@@ -1,6 +1,6 @@
 # OmniRoute Model Tester & Benchmark
 
-An automatic Python toolkit for scanning, testing availability, measuring latency (*benchmark*), and verifying *tool-calling* (function calling) capabilities of all AI models connected to an account on [OmniRoute](https://omniroute.ai).
+An automatic Python toolkit for scanning, testing availability, measuring latency (*benchmark*), and verifying *tool-calling* (function calling) capabilities of all AI models connected to an account on [OmniRoute](https://github.com/devolkus/omniroute).
 
 Very useful before creating *Combo* / *Fallback List* configurations in OmniRoute, so you can know exactly which models are actually active, stable, fast, and ready to be used in your application pipeline or AI agent.
 
