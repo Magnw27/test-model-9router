@@ -1,53 +1,26 @@
-"""Fetch all models exposed by OmniRoute via its OpenAI-compatible API."""
+"""Fetch the current model list from OmniRoute."""
+import sys
+from llm_client import OmniRouteError, list_models
 
-import os
-import requests
-from dotenv import load_dotenv
-
-load_dotenv()
-
-BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://localhost:20128/v1").rstrip("/")
-API_KEY = os.getenv("OMNIROUTE_API_KEY")
-
-
-def main():
-    if not API_KEY:
-        raise RuntimeError("OMNIROUTE_API_KEY belum terisi di .env")
-
-    url = f"{BASE_URL}/models"
-    headers = {"Authorization": f"Bearer {API_KEY}"}
-
-    print(f"Menghubungi OmniRoute: {url} ...")
+def main() -> int:
+    print("Mengambil daftar model dari OmniRoute...")
     try:
-        response = requests.get(url, headers=headers, timeout=30)
-    except Exception as e:
-        print(f"Gagal menghubungi OmniRoute: {e}")
-        print("Pastikan server OmniRoute sudah berjalan dan URL-nya benar.")
-        return
-
-    if response.status_code != 200:
-        print(f"Gagal. Status code: {response.status_code}")
-        print("Respon:", response.text[:500])
-        print("Periksa OMNIROUTE_BASE_URL dan OMNIROUTE_API_KEY di .env.")
-        return
-
-    data = response.json()
-    models = [item["id"] for item in data.get("data", []) if item.get("id")]
-
-    if not models:
-        print("Endpoint merespon, tapi tidak ada model ditemukan.")
-        print("Isi mentah respon:", data)
-        return
-
-    print(f"Ditemukan {len(models)} model.\\n")
-    for model in models:
-        print(model)
-
-    with open("all_models.txt", "w", encoding="utf-8") as f:
-        f.write("\\n".join(models))
-
-    print(f"\\nDisimpan ke all_models.txt ({len(models)} baris).")
-
+        models = list_models()
+    except (OmniRouteError, ValueError) as exc:
+        print(f"Gagal: {exc}")
+        print("Periksa OmniRoute, OMNIROUTE_BASE_URL, dan OMNIROUTE_API_KEY.")
+        return 1
+    ids = sorted({str(item["id"]) for item in models})
+    if not ids:
+        print("OmniRoute merespons, tetapi tidak ada model.")
+        return 1
+    with open("all_models.txt", "w", encoding="utf-8") as handle:
+        handle.write("\n".join(ids) + "\n")
+    print(f"OK: {len(ids)} model ditemukan.")
+    print("Disimpan ke all_models.txt")
+    for model_id in ids:
+        print(f"  {model_id}")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
