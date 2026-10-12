@@ -1,5 +1,5 @@
 """
-Termux-friendly 9Router model scanner and latency benchmark.
+Termux-friendly OmniRoute model scanner and latency benchmark.
 
 No LangChain or OpenAI SDK required. Results are resumable in test_state.json.
 """
@@ -383,7 +383,7 @@ def run_pool(items, fn, workers, on_result):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fast, resumable 9Router model scanner (Termux-friendly)"
+        description="Fast, resumable OmniRoute model scanner (Termux-friendly)"
     )
     parser.add_argument("--all", action="store_true", help="retest every listed model")
     parser.add_argument("--only", default="", help="provider allowlist, comma-separated")
