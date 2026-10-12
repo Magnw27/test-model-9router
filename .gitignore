@@ -15,3 +15,12 @@ work_models.txt
 work_models.json
 work_models.txt.tmp
 work_models.json.tmp
+
+# Free-model benchmark outputs
+free_models.txt
+free_models_catalog.json
+free_test_state.json
+free_test_state.json.tmp
+free_test_results.txt
+free_work_models.txt
+free_work_models.txt.tmp
