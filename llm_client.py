@@ -4,6 +4,7 @@ Uses requests directly instead of LangChain/OpenAI SDK so it installs cleanly
 on Termux and does not need compiled dependencies such as jiter.
 """
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -13,6 +14,7 @@ load_dotenv()
 
 BASE_URL = os.getenv("NINEROUTER_BASE_URL", "").strip().rstrip("/")
 API_KEY = os.getenv("NINEROUTER_API_KEY", "").strip()
+_sessions = threading.local()
 
 
 class ModelTimeoutError(TimeoutError):
@@ -40,13 +42,29 @@ class ModelResponse:
 
 
 def validate_config() -> None:
-    if not BASE_URL or not API_KEY:
+    if not BASE_URL or not API_KEY or API_KEY.lower() in (
+        "isi_api_key_9router_di_sini", "api_key_milikmu", "enter_your_9router_api_key_here"
+    ):
         raise RuntimeError(
             "Konfigurasi belum lengkap. Isi NINEROUTER_BASE_URL dan "
-            "NINEROUTER_API_KEY di file .env terlebih dahulu."
+            "NINEROUTER_API_KEY yang valid di file .env terlebih dahulu."
         )
     if not BASE_URL.startswith(("http://", "https://")):
         raise RuntimeError("NINEROUTER_BASE_URL harus diawali http:// atau https://")
+
+
+def _thread_session():
+    """Reuse HTTP connections per worker thread without sharing Session across threads."""
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "test-model-9router/2.1",
+        })
+        _sessions.session = session
+    return session
 
 
 class ChatClient:
@@ -71,14 +89,9 @@ class ChatClient:
             payload["tool_choice"] = "auto"
 
         try:
-            response = requests.post(
+            response = _thread_session().post(
                 url,
-                headers={
-                    "Authorization": f"Bearer {API_KEY}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "test-model-9router/2.0",
-                },
+                headers={"Authorization": f"Bearer {API_KEY}"},
                 json=payload,
                 timeout=(10.0, self.read_timeout),
             )
