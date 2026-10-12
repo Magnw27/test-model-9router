@@ -7,7 +7,7 @@ Pemindai dan benchmark model untuk endpoint API yang kompatibel dengan OpenAI di
 - Mengambil daftar model dari endpoint **/models**.
 - Menguji respons model dan mengukur latensi.
 - Mengurutkan model sukses dari yang tercepat melalui **work-model.py**.
-- Menyimpan progres ke **test_state.json** setelah setiap model, sehingga pengujian dapat dilanjutkan.
+- Menyimpan progres secara atomik dalam batch kecil (setiap 5 hasil) dan saat proses selesai, sehingga pengujian dapat dilanjutkan tanpa menulis seluruh file state untuk setiap model.
 - Memisahkan error permanen, timeout, error sementara, dan respons kosong.
 - Mengurangi request bersamaan ke provider yang sama, melakukan retry terbatas, dan melewati provider sementara setelah beberapa error beruntun.
 - Pengujian tool-calling opsional.
@@ -83,7 +83,7 @@ python test_all_models.py --tools
 
 Pilihan **--workers** menerima 1–32. Untuk Termux, mulai dari 2 atau 4, lalu naikkan perlahan jika koneksi stabil. Worker paralel bukan berarti provider yang sama akan dibombardir bersamaan: model dalam provider yang sama tetap dijalankan bergantian.
 
-Jika proses dihentikan dengan Ctrl+C, progres yang sudah selesai disimpan. Jalankan perintah yang sama kembali untuk melanjutkan. Status **TRANSIENT** dan **THROTTLED_SKIP** dicoba kembali pada eksekusi berikutnya; gunakan **--all** untuk memaksa tes ulang semua model.
+State ditulis atomik setiap 5 hasil dan sekali lagi saat proses selesai. Jika dihentikan dengan Ctrl+C, progres yang sudah masuk ke memori disimpan sebelum keluar. Jalankan perintah yang sama kembali untuk melanjutkan. Status **TRANSIENT**, **THROTTLED_SKIP**, **TIMEOUT**, dan **EMPTY** dicoba kembali pada eksekusi berikutnya; gunakan **--all** untuk memaksa tes ulang semua model.
 
 ### 3. Tampilkan model yang berhasil dan paling cepat
 
