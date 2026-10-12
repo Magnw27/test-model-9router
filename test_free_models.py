@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Discover and benchmark explicitly identified free models from an OpenAI-compatible gateway.
+"""Discover and benchmark explicitly identified free models from an OmniRoute-compatible gateway.
 
 Free classification is conservative: a model is included only when the model ID
 contains a recognized free suffix, the API marks it free, or pricing metadata
@@ -201,7 +201,7 @@ def probe(model_id, timeout, attempts):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fast benchmark for all explicitly free models in the configured gateway.")
+    parser = argparse.ArgumentParser(description="Fast benchmark for all explicitly free models in the configured OmniRoute gateway.")
     parser.add_argument("--workers", type=int, default=8, help="parallel model requests (default: 8, max: 32)")
     parser.add_argument("--timeout", type=float, default=12.0, help="per-request read timeout seconds (default: 12)")
     parser.add_argument("--attempts", type=int, default=1, help="attempts per model (default: 1 for speed)")
@@ -265,7 +265,7 @@ def main():
         interrupted = True
         print("\nStopping; saving completed results...")
     finally:
-        pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        pool.shutdown(wait=True)
         with _state_lock:
             state["meta"] = {"last_run": datetime.now().astimezone().isoformat(timespec="seconds"),
                              "workers": args.workers, "timeout": args.timeout, "attempts": args.attempts}
