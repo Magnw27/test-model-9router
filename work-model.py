@@ -79,9 +79,10 @@ def main():
         tier = item["tier"]
         tier_color = "32" if tier == "FAST" else "33" if tier == "NORMAL" else "31"
         tools_label = "YES" if item["tools"] is True else "NO" if item["tools"] is False else "?"
+        tier_display = color(tier, tier_color) + (" " * max(0, 7 - len(tier)))
         print(
             f"{index:>4}  {item['latency']:>8.3f}s  "
-            f"{color(tier, tier_color):<7}  {tools_label:<6}  {item['model']}"
+            f"{tier_display}  {tools_label:<6}  {item['model']}"
         )
 
     if not successful:
