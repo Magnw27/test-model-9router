@@ -39,7 +39,7 @@ OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
 OMNIROUTE_API_KEY=API_KEY_MILIKMU
 ~~~
 
-**Penting tentang alamat server:** **127.0.0.1** hanya mengarah ke perangkat yang menjalankan skrip. Jika OmniRoute berjalan di PC lain, ganti host dengan IP lokal PC tersebut, misalnya **http://192.168.1.10:20128/v1**, lalu pastikan firewall dan konfigurasi server mengizinkan koneksi dari perangkatmu. Port **20128** adalah contoh; gunakan port API yang benar dari konfigurasi 9Router-mu.
+**Penting tentang alamat server:** **127.0.0.1** hanya mengarah ke perangkat yang menjalankan skrip. Jika OmniRoute berjalan di PC lain, ganti host dengan IP lokal PC tersebut, misalnya **http://192.168.1.10:20128/v1**, lalu pastikan firewall dan konfigurasi server mengizinkan koneksi dari perangkatmu. Port **20128** adalah contoh; gunakan port API yang benar dari konfigurasi OmniRoute-mu.
 
 Jangan mengunggah file **.env** atau membagikan API key. File **.env** sudah masuk **.gitignore**.
 
