@@ -11,3 +11,7 @@ all_models.txt
 test_state.json
 test_state.json.tmp
 test_results.txt
+work_models.txt
+work_models.json
+work_models.txt.tmp
+work_models.json.tmp
