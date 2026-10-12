@@ -1,4 +1,4 @@
-"""Lightweight OpenAI-compatible client for 9Router.
+"""Lightweight OpenAI-compatible client for OmniRoute.
 
 Uses requests directly instead of LangChain/OpenAI SDK so it installs cleanly
 on Termux and does not need compiled dependencies such as jiter.
