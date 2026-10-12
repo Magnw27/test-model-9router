@@ -29,7 +29,7 @@ BACKOFF = [2.0, 5.0, 10.0]
 RETRY_CAP = 15.0
 BREAKER_LIMIT = 4
 DEFAULT_GAP = 0.35
-PROVIDER_GAP = {}
+PROVIDER_GAP = {"af": 2.0}
 RETRY_STATUSES = {"TRANSIENT", "THROTTLED_SKIP", "TIMEOUT", "EMPTY"}
 SAVE_EVERY = 5
 KNOWN_COMBOS = set()
@@ -87,7 +87,9 @@ def now():
 
 
 def provider_of(model_id):
-    return model_id.split("/", 1)[0].lower() if "/" in model_id else "unknown"
+    # If an ID has no provider prefix, keep it as a unique key rather than
+    # serializing every prefix-less model under one shared "unknown" lock.
+    return model_id.split("/", 1)[0].lower()
 
 
 def text_of(content):
