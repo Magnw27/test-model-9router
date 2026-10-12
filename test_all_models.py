@@ -1,141 +1,151 @@
 """
-test_all_models.py -- Uji ketersediaan dan kapabilitas model di 9Router.
+Termux-friendly 9Router model scanner and latency benchmark.
 
-Fitur:
-1. Waktu respons dikelompokkan: FAST (<=15s) / NORMAL (<=45s) / SLOW (>45s). Lebih dari 2 menit = TIMEOUT.
-2. Kegagalan dibedakan secara detail:
-   - BLOCKED (permanen: kredit habis, model retired, auth rusak, dsb)
-   - TRANSIENT (sementara: rate limit 429, server sibuk). TRANSIENT dicoba ulang otomatis
-     dan bisa diuji lagi nanti tanpa mengulang seluruh pengujian dari awal.
-3. Selang-seling antar provider (interleaving) untuk mencegah ban / rate limit beruntun:
-   1 request per provider dalam satu waktu, jeda otomatis, dan sistem circuit breaker.
-4. Opsional --tools: cek apakah model yang OK mendukung function calling / tool calling.
-5. Progres tersimpan secara aman & atomik di test_state.json setiap kali model selesai diuji.
-   Laporan yang mudah dibaca ditulis di test_results.txt.
-
-Cara pakai:
-  python list_models.py              (ambil daftar model terbaru dari 9Router)
-  python test_all_models.py          (uji yang belum diuji + ulang yang TRANSIENT)
-  python test_all_models.py --all    (uji ulang SEMUA model)
-  python test_all_models.py --only kr,ag     (hanya uji provider tertentu)
-  python test_all_models.py --skip cl,af     (lewati provider tertentu)
-  python test_all_models.py --tools          (tambah uji tool-calling untuk model yang OK)
+No LangChain or OpenAI SDK required. Results are resumable in test_state.json.
 """
-
 import argparse
 import json
 import os
 import re
+import sys
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import openai
-from langchain_core.tools import tool
+from llm_client import APIError, APITransportError, ModelTimeoutError, get_llm, validate_config
 
-from llm_client import get_llm
-
-# ---------------------------------------------------------------- pengaturan
 LIST_FILE = "all_models.txt"
 STATE_FILE = "test_state.json"
 REPORT_FILE = "test_results.txt"
 
-PROMPT = "Balas hanya dengan satu kata: OK"
-
-FAST_MAX = 15.0      # detik: sampai sini = FAST
-NORMAL_MAX = 45.0    # detik: sampai sini = NORMAL, di atasnya = SLOW
-HARD_LIMIT = 120.0   # detik: lebih dari ini = TIMEOUT (dianggap gagal)
-
-MAX_ATTEMPTS = 3               # percobaan untuk error TRANSIENT
-BACKOFF = [5.0, 15.0, 30.0]    # jeda jika server tidak memberi petunjuk "reset after"
-RETRY_CAP = 45.0               # jeda tunggu maksimum antar percobaan
-BREAKER_LIMIT = 8              # provider dihentikan sementara bila segini model gagal TRANSIENT
-DEFAULT_GAP = 1.0              # jeda (detik) setelah tiap request ke provider yang sama
-PROVIDER_GAP = {"af": 2.0}     # provider dengan batas ketat
+PROMPT = "Reply with only one word: OK"
+FAST_MAX = 15.0
+NORMAL_MAX = 45.0
+HARD_LIMIT = 45.0
+MAX_ATTEMPTS = 2
+BACKOFF = [2.0, 5.0, 10.0]
+RETRY_CAP = 15.0
+BREAKER_LIMIT = 4
+DEFAULT_GAP = 0.35
+PROVIDER_GAP = {}
 RETRY_STATUSES = {"TRANSIENT", "THROTTLED_SKIP"}
-
-# Daftar combo ID atau nama model custom yang ingin dilewati (opsional)
 KNOWN_COMBOS = set()
 
-# Aturan pendeteksian kegagalan permanen (butuh tindakan user / model memang tidak ada)
 BLOCK_RULES = [
     ("invalid_model", ["INVALID_MODEL_ID", "model_not_supported", "model_not_found",
                        "does not exist or you do not have access", "not supported when using Codex",
                        "please check the model you provided", "[404]", "not found for account"]),
     ("retired", ["retired", "end of life", '"Gone"']),
     ("unavailable", ["every channel behind it is switched off"]),
-    ("no_credit", ["insufficient_credits", "Insufficient Balance", "Credits Required",
+    ("no_credit", ["insufficient_credits", "insufficient balance", "credits required",
                    "requires an active subscription", "not included in your free usage"]),
-    ("incompatible", ["Unexpected response type", "stream_options", "only available on agentic harnesses",
-                      "decisions model", "cannot be used with the chat/completions"]),
-    ("auth", ["No active credentials", "API key format is incorrect", "Unauthorized",
-              "[401]", "[403]", "HTTP 403"]),
+    ("incompatible", ["unexpected response type", "stream_options", "only available on agentic harnesses",
+                      "decisions model", "cannot be used with the chat/completions",
+                      "does not support tool calling"]),
+    ("auth", ["no active credentials", "api key format is incorrect", "unauthorized",
+              "[401]", "[403]", "http 403"]),
 ]
-
-# Kata kunci kegagalan sementara (layak dicoba lagi)
-TRANSIENT_HINTS = ["429", "Too Many Requests", "rate limit", "rate-limited", "high demand",
-                   "temporarily", "overloaded", "ResourceExhausted", "[500]", "[502]", "[503]",
-                   "Internal error"]
+TRANSIENT_HINTS = [
+    "429", "too many requests", "rate limit", "rate-limited", "high demand",
+    "temporarily", "overloaded", "resourceexhausted", "[500]", "[502]", "[503]",
+    "internal error", "server error", "connection reset", "connection refused",
+]
 
 _state_lock = threading.Lock()
 _breaker_lock = threading.Lock()
 _provider_locks = defaultdict(threading.Lock)
 _breaker = defaultdict(int)
 
+GET_TIME_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_time",
+        "description": "Return a sample time for the requested city.",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string", "description": "City name"}},
+            "required": ["city"],
+            "additionalProperties": False,
+        },
+    },
+}
 
-@tool
-def get_time(city: str) -> str:
-    """Ambil jam saat ini untuk sebuah kota."""
-    return "12:00"
+
+class Colors:
+    enabled = sys.stdout.isatty() and not os.getenv("NO_COLOR")
+
+    @classmethod
+    def paint(cls, text, code):
+        return f"\033[{code}m{text}\033[0m" if cls.enabled else text
 
 
-# ---------------------------------------------------------------- utilitas
-def now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+def now():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def provider_of(model_id: str) -> str:
-    return model_id.split("/", 1)[0]
+def provider_of(model_id):
+    return model_id.split("/", 1)[0].lower() if "/" in model_id else "unknown"
 
 
-def text_of(content) -> str:
-    """Ambil teks dari balasan model, baik berbentuk string maupun list of parts."""
+def text_of(content):
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
         parts = []
-        for p in content:
-            if isinstance(p, str):
-                parts.append(p)
-            elif isinstance(p, dict):
-                parts.append(p.get("text") or "")
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                parts.append(part.get("text") or "")
         return "".join(parts).strip()
     return str(content or "").strip()
 
 
-def parse_wait(msg: str):
-    """Membaca petunjuk '(reset after 1m 16s)' dari pesan error."""
-    m = re.search(r"reset after\s+(?:(\d+)m)?\s*(?:(\d+)s)?", msg)
-    if m and (m.group(1) or m.group(2)):
-        return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+def parse_wait(message, headers=None):
+    """Read a provider reset hint or HTTP Retry-After header."""
+    headers = headers or {}
+    for key, value in headers.items():
+        if key.lower() in ("retry-after", "x-ratelimit-reset-after", "ratelimit-reset-after"):
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                pass
+    match = re.search(r"reset after\s+(?:(\d+)m)?\s*(?:(\d+(?:\.\d+)?)s)?", message, re.I)
+    if match and (match.group(1) or match.group(2)):
+        return int(match.group(1) or 0) * 60 + float(match.group(2) or 0)
     return None
 
 
-def classify(exc, msg: str):
-    low = msg.lower()
-    if isinstance(exc, openai.APITimeoutError) or "timed out" in low:
-        return "TIMEOUT", "lebih dari batas waktu"
+def classify(exc, message):
+    status = getattr(exc, "status_code", None)
+    lower = message.lower()
+
+    if isinstance(exc, ModelTimeoutError):
+        return "TIMEOUT", "request timeout"
+    if status == 402:
+        return "BLOCKED", "no_credit"
+    if status in (401, 403):
+        return "BLOCKED", "auth"
+    if status == 404:
+        return "BLOCKED", "invalid_model"
+    if status == 410:
+        return "BLOCKED", "retired"
+    if status == 429 or (isinstance(status, int) and status >= 500):
+        return "TRANSIENT", "temporary_http_error"
+
     for reason, needles in BLOCK_RULES:
-        if any(n.lower() in low for n in needles):
+        if any(needle.lower() in lower for needle in needles):
             return "BLOCKED", reason
-    if any(h.lower() in low for h in TRANSIENT_HINTS):
-        return "TRANSIENT", None
-    return "TRANSIENT", "unknown"
+    if any(hint in lower for hint in TRANSIENT_HINTS):
+        return "TRANSIENT", "temporary_error"
+    if isinstance(exc, APITransportError):
+        return "TRANSIENT", "network_error"
+    return "TRANSIENT", "unknown_error"
 
 
-def tier_of(latency: float) -> str:
+def tier_of(latency):
     if latency <= FAST_MAX:
         return "FAST"
     if latency <= NORMAL_MAX:
@@ -143,280 +153,346 @@ def tier_of(latency: float) -> str:
     return "SLOW"
 
 
-# ---------------------------------------------------------------- pengujian
-def run_probe(model_id: str) -> dict:
-    """Uji satu model. Mencoba ulang otomatis jika terkena error TRANSIENT."""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        t0 = time.monotonic()
+def run_probe(model_id, timeout, attempts):
+    """Probe one model, retrying transient errors only."""
+    for attempt in range(1, attempts + 1):
+        started = time.monotonic()
         try:
-            resp = get_llm(model_id, read_timeout=HARD_LIMIT).invoke(PROMPT)
-            latency = time.monotonic() - t0
-            if latency > HARD_LIMIT:
-                return {"status": "TIMEOUT", "reason": "lebih dari batas waktu",
-                        "latency": round(latency, 1), "attempts": attempt}
-            text = text_of(resp.content)
-            if not text:
-                return {"status": "EMPTY", "reason": "balasan kosong",
-                        "latency": round(latency, 1), "attempts": attempt}
-            return {"status": "OK", "tier": tier_of(latency), "latency": round(latency, 1),
-                    "detail": text[:60], "attempts": attempt}
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)
-            kind, reason = classify(e, msg)
-            latency = round(time.monotonic() - t0, 1)
-            if kind == "TRANSIENT" and attempt < MAX_ATTEMPTS:
-                wait = parse_wait(msg)
-                wait = BACKOFF[attempt - 1] if wait is None else wait
-                time.sleep(min(wait, RETRY_CAP))
+            response = get_llm(model_id, read_timeout=timeout).invoke(PROMPT)
+            latency = time.monotonic() - started
+            answer = text_of(response.content)
+            if not answer:
+                return {"status": "EMPTY", "reason": "empty_response",
+                        "latency": round(latency, 2), "attempts": attempt}
+            return {"status": "OK", "tier": tier_of(latency), "latency": round(latency, 2),
+                    "detail": answer[:100], "attempts": attempt}
+        except Exception as exc:
+            message = str(exc)
+            status, reason = classify(exc, message)
+            latency = round(time.monotonic() - started, 2)
+            if status == "TRANSIENT" and attempt < attempts:
+                headers = getattr(exc, "headers", {})
+                wait = parse_wait(message, headers)
+                if wait is None:
+                    wait = BACKOFF[min(attempt - 1, len(BACKOFF) - 1)]
+                delay = min(max(0.0, wait), RETRY_CAP)
+                if delay:
+                    time.sleep(delay)
                 continue
-            return {"status": kind, "reason": reason, "detail": msg[:200],
+            return {"status": status, "reason": reason, "detail": message[:240],
                     "latency": latency, "attempts": attempt}
-    return {"status": "TRANSIENT", "reason": "unknown", "attempts": MAX_ATTEMPTS}
+    return {"status": "TRANSIENT", "reason": "unknown_error", "attempts": attempts}
 
 
-def probe_worker(model_id: str):
+def probe_worker(model_id, timeout, attempts, gap):
     provider = provider_of(model_id)
-    with _provider_locks[provider]:  # 1 request per provider dalam satu waktu
+    with _provider_locks[provider]:
         with _breaker_lock:
             tripped = _breaker[provider] >= BREAKER_LIMIT
         if tripped:
-            result = {"status": "THROTTLED_SKIP",
-                      "reason": f"provider {provider} terus kena rate limit, dilewati sementara"}
+            result = {
+                "status": "THROTTLED_SKIP",
+                "reason": f"provider {provider} repeatedly rate-limited; skipped for this run",
+            }
         else:
-            result = run_probe(model_id)
-            time.sleep(PROVIDER_GAP.get(provider, DEFAULT_GAP))
+            result = run_probe(model_id, timeout, attempts)
             if result["status"] == "TRANSIENT":
                 with _breaker_lock:
                     _breaker[provider] += 1
+            else:
+                with _breaker_lock:
+                    _breaker[provider] = 0
+            time.sleep(max(0.0, PROVIDER_GAP.get(provider, gap)))
     return model_id, result
 
 
-def tools_worker(model_id: str):
+def tools_worker(model_id, timeout, gap):
     provider = provider_of(model_id)
     with _provider_locks[provider]:
         try:
-            llm = get_llm(model_id, read_timeout=HARD_LIMIT).bind_tools([get_time])
-            resp = llm.invoke("Gunakan tool get_time untuk kota Jakarta.")
-            outcome = bool(getattr(resp, "tool_calls", None))
-        except Exception:  # noqa: BLE001
+            response = get_llm(model_id, read_timeout=timeout).invoke(
+                "Use the get_time tool for Jakarta.", tools=[GET_TIME_TOOL]
+            )
+            outcome = bool(response.tool_calls)
+        except Exception:
             outcome = "error"
-        time.sleep(PROVIDER_GAP.get(provider, DEFAULT_GAP))
+        time.sleep(max(0.0, PROVIDER_GAP.get(provider, gap)))
     return model_id, outcome
 
 
-# ---------------------------------------------------------------- state & laporan
-def load_state() -> dict:
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"meta": {}, "models": {}}
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {"meta": {}, "models": {}}
+    try:
+        with open(STATE_FILE, encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"Gagal membaca {STATE_FILE}: {exc}. Cadangkan file tersebut sebelum menghapusnya."
+        )
+    if not isinstance(data, dict):
+        raise SystemExit(f"Format {STATE_FILE} tidak valid.")
+    data.setdefault("meta", {})
+    data.setdefault("models", {})
+    if not isinstance(data["meta"], dict) or not isinstance(data["models"], dict):
+        raise SystemExit(f"Struktur {STATE_FILE} tidak valid.")
+    return data
 
 
-def save_state(state: dict) -> None:
+def save_state(state):
     tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, STATE_FILE)  # simpan secara atomik
+    with open(tmp, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=1)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(tmp, STATE_FILE)
 
 
-def names_from_report(path: str) -> set:
+def names_from_report(path):
     names = set()
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if s.startswith("- "):
-                    toks = s[2:].split()
-                    tok = toks[0].rstrip(":") if toks else ""
-                    if "/" in tok:
-                        names.add(tok)
+        with open(path, encoding="utf-8") as file:
+            for line in file:
+                text = line.strip()
+                if text.startswith("- "):
+                    token = text[2:].split()[0].rstrip(":") if text[2:].split() else ""
+                    if "/" in token:
+                        names.add(token)
     return names
 
 
-def write_report(state: dict) -> None:
+def write_report(state):
     models = state["models"]
     by_status = defaultdict(list)
-    for m, r in models.items():
-        by_status[r["status"]].append(m)
+    for model, result in models.items():
+        by_status[result.get("status", "UNKNOWN")].append(model)
 
-    lines = [f"LAPORAN UJI MODEL  ({now()})",
-             f"Total tercatat: {len(models)}  | batas gagal: {int(HARD_LIMIT)} dtk  | "
-             f"FAST <= {int(FAST_MAX)} dtk, NORMAL <= {int(NORMAL_MAX)} dtk, SLOW di atasnya", ""]
-
-    ok = by_status.get("OK", [])
-    lines.append(f"OK ({len(ok)}):")
+    lines = [
+        f"MODEL TEST REPORT ({now()})",
+        f"Recorded: {len(models)} | timeout: {HARD_LIMIT:g}s | "
+        f"FAST <= {FAST_MAX:g}s, NORMAL <= {NORMAL_MAX:g}s, SLOW above",
+        "",
+    ]
+    successful = by_status.get("OK", [])
+    lines.append(f"OK ({len(successful)}):")
     for tier in ("FAST", "NORMAL", "SLOW"):
-        group = sorted(m for m in ok if models[m].get("tier") == tier)
+        group = sorted(
+            (model for model in successful if models[model].get("tier") == tier),
+            key=lambda model: (models[model].get("latency", 1e9), model.lower()),
+        )
         if group:
             lines.append(f"  -- {tier} ({len(group)}) --")
-        for m in group:
-            r = models[m]
-            extra = ""
-            if r.get("tools") is True:
-                extra += "  tools=ya"
-            elif r.get("tools") is False:
-                extra += "  tools=TIDAK"
-            elif r.get("tools") == "error":
-                extra += "  tools=error"
-            hist = r.get("history", [])
-            if len(hist) >= 2 and all(h == "OK" for h in hist):
-                extra += f"  stabil({len(hist)}x OK)"
-            lines.append(f"- {m}  [{r.get('tier')} {r.get('latency')}s]{extra}")
+        for model in group:
+            result = models[model]
+            extras = []
+            if result.get("tools") is True:
+                extras.append("tools=YES")
+            elif result.get("tools") is False:
+                extras.append("tools=NO")
+            elif result.get("tools") == "error":
+                extras.append("tools=ERROR")
+            history = result.get("history", [])
+            if len(history) >= 2 and all(value == "OK" for value in history):
+                extras.append(f"stable({len(history)}x OK)")
+            suffix = ("  " + "  ".join(extras)) if extras else ""
+            lines.append(
+                f"- {model}  [{result.get('tier')} {result.get('latency')}s]{suffix}"
+            )
 
-    for title, key in (("EMPTY (balasan kosong)", "EMPTY"),
-                       ("TIMEOUT (lebih dari batas waktu)", "TIMEOUT"),
-                       ("TRANSIENT (sementara, uji lagi nanti)", "TRANSIENT"),
-                       ("THROTTLED_SKIP (dilewati karena rate limit, uji lagi nanti)", "THROTTLED_SKIP")):
+    sections = [
+        ("EMPTY (empty response)", "EMPTY"),
+        ("TIMEOUT", "TIMEOUT"),
+        ("TRANSIENT (retry later)", "TRANSIENT"),
+        ("THROTTLED_SKIP (rate-limited provider skipped)", "THROTTLED_SKIP"),
+    ]
+    for title, key in sections:
         group = sorted(by_status.get(key, []))
-        lines += ["", f"{title} ({len(group)}):"] + [f"- {m}" for m in group]
+        lines += ["", f"{title} ({len(group)}):"] + [f"- {model}" for model in group]
 
     blocked = by_status.get("BLOCKED", [])
-    lines += ["", f"BLOCKED (permanen / butuh tindakan) ({len(blocked)}):"]
-    by_reason = defaultdict(list)
-    for m in blocked:
-        by_reason[models[m].get("reason")].append(m)
-    for reason, group in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+    lines += ["", f"BLOCKED (action may be needed) ({len(blocked)}):"]
+    reasons = defaultdict(list)
+    for model in blocked:
+        reasons[models[model].get("reason", "unknown")].append(model)
+    for reason, group in sorted(reasons.items(), key=lambda item: (-len(item[1]), item[0])):
         lines.append(f"  -- {reason} ({len(group)}) --")
-        lines += [f"- {m}" for m in sorted(group)]
+        lines.extend(f"- {model}" for model in sorted(group))
 
     vanished = state["meta"].get("vanished", [])
     if vanished:
-        lines += ["", f"HILANG DARI DAFTAR MODEL ({len(vanished)}): pernah ada, sekarang tidak ada di all_models.txt"]
-        lines += [f"- {m}" for m in vanished]
+        lines += ["", f"MISSING FROM CURRENT MODEL LIST ({len(vanished)}):"]
+        lines.extend(f"- {model}" for model in vanished)
 
-    with open(REPORT_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-def print_summary(state: dict) -> None:
-    per = defaultdict(lambda: defaultdict(int))
-    for m, r in state["models"].items():
-        per[provider_of(m)][r["status"]] += 1
-    print("\n=== RINGKASAN PER PROVIDER ===")
-    print(f"{'provider':<12}{'OK':>5}{'BLOCKED':>9}{'TRANSIENT':>11}{'EMPTY':>7}{'TIMEOUT':>9}{'SKIP':>6}")
-    for p in sorted(per):
-        s = per[p]
-        print(f"{p:<12}{s['OK']:>5}{s['BLOCKED']:>9}{s['TRANSIENT']:>11}{s['EMPTY']:>7}"
-              f"{s['TIMEOUT']:>9}{s['THROTTLED_SKIP']:>6}")
+    tmp = REPORT_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")
+    os.replace(tmp, REPORT_FILE)
 
 
-# ---------------------------------------------------------------- alur utama
-def interleave(models: list) -> list:
-    """Selang-seling antar provider supaya satu provider tidak dibombardir beruntun."""
-    queues = defaultdict(list)
-    for m in models:
-        queues[provider_of(m)].append(m)
-    order, pools = [], list(queues.values())
-    while any(pools):
-        for q in pools:
-            if q:
-                order.append(q.pop(0))
-    return order
+def print_summary(state):
+    per_provider = defaultdict(lambda: defaultdict(int))
+    for model, result in state["models"].items():
+        per_provider[provider_of(model)][result.get("status", "UNKNOWN")] += 1
+
+    print("\n=== SUMMARY BY PROVIDER ===")
+    print(f"{'provider':<20}{'OK':>5}{'BLOCKED':>9}{'TRANSIENT':>11}{'EMPTY':>7}{'TIMEOUT':>9}{'SKIP':>6}")
+    for provider in sorted(per_provider):
+        counts = per_provider[provider]
+        print(f"{provider:<20}{counts['OK']:>5}{counts['BLOCKED']:>9}"
+              f"{counts['TRANSIENT']:>11}{counts['EMPTY']:>7}"
+              f"{counts['TIMEOUT']:>9}{counts['THROTTLED_SKIP']:>6}")
+
+
+def interleave(models):
+    """Round-robin provider queues in O(n), avoiding repeated list.pop(0)."""
+    queues = defaultdict(deque)
+    for model in models:
+        queues[provider_of(model)].append(model)
+    result = []
+    active = deque(queues.values())
+    while active:
+        queue = active.popleft()
+        if queue:
+            result.append(queue.popleft())
+        if queue:
+            active.append(queue)
+    return result
 
 
 def run_pool(items, fn, workers, on_result):
-    ex = ThreadPoolExecutor(max_workers=workers)
-    try:
-        futures = [ex.submit(fn, it) for it in items]
-        for fut in as_completed(futures):
-            on_result(*fut.result())
-    except KeyboardInterrupt:
-        ex.shutdown(wait=False, cancel_futures=True)
-        raise
-    ex.shutdown()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(fn, item) for item in items]
+        for future in as_completed(futures):
+            on_result(*future.result())
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Uji ketersediaan dan kapabilitas model 9Router")
-    ap.add_argument("--all", action="store_true", help="uji ulang semua model (bukan hanya yang belum/transient)")
-    ap.add_argument("--only", default="", help="provider yang diuji, pisah koma (contoh: kr,ag)")
-    ap.add_argument("--skip", default="", help="provider yang dilewati, pisah koma")
-    ap.add_argument("--tools", action="store_true", help="uji kemampuan tool-calling untuk model OK")
-    ap.add_argument("--workers", type=int, default=8, help="jumlah worker paralel (default: 8)")
-    args = ap.parse_args()
-    only = {p for p in args.only.split(",") if p}
-    skip = {p for p in args.skip.split(",") if p}
+    parser = argparse.ArgumentParser(
+        description="Fast, resumable 9Router model scanner (Termux-friendly)"
+    )
+    parser.add_argument("--all", action="store_true", help="retest every listed model")
+    parser.add_argument("--only", default="", help="provider allowlist, comma-separated")
+    parser.add_argument("--skip", default="", help="providers to skip, comma-separated")
+    parser.add_argument("--tools", action="store_true", help="test tool-calling on successful models")
+    parser.add_argument("--workers", type=int, default=4, help="parallel providers (default: 4)")
+    parser.add_argument("--timeout", type=float, default=HARD_LIMIT, help="read timeout seconds (default: 45)")
+    parser.add_argument("--attempts", type=int, default=MAX_ATTEMPTS, help="attempts per model (default: 2)")
+    parser.add_argument("--gap", type=float, default=DEFAULT_GAP, help="seconds between same-provider calls")
+    args = parser.parse_args()
+
+    if not 1 <= args.workers <= 32:
+        parser.error("--workers must be between 1 and 32")
+    if args.timeout <= 0:
+        parser.error("--timeout must be greater than zero")
+    if not 1 <= args.attempts <= 5:
+        parser.error("--attempts must be between 1 and 5")
+    if args.gap < 0:
+        parser.error("--gap cannot be negative")
 
     try:
-        with open(LIST_FILE, encoding="utf-8") as f:
-            listed = [ln.strip() for ln in f if ln.strip()]
-    except FileNotFoundError:
-        raise SystemExit("all_models.txt tidak ditemukan. Jalankan dulu: python list_models.py")
-    current = [m for m in listed if m not in KNOWN_COMBOS]
+        validate_config()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
 
+    only = {value.strip().lower() for value in args.only.split(",") if value.strip()}
+    skip = {value.strip().lower() for value in args.skip.split(",") if value.strip()}
+
+    try:
+        with open(LIST_FILE, encoding="utf-8") as file:
+            listed = list(dict.fromkeys(line.strip() for line in file if line.strip()))
+    except FileNotFoundError:
+        raise SystemExit(f"{LIST_FILE} not found. Run: python list_models.py")
+
+    current = [model for model in listed if model not in KNOWN_COMBOS]
     state = load_state()
     meta = state["meta"]
     prev_seen = set(meta.get("seen", [])) or names_from_report(REPORT_FILE)
-    gone = (prev_seen - set(current)) - KNOWN_COMBOS
-    vanished = (set(meta.get("vanished", [])) | gone) - set(current)
+    vanished = (set(meta.get("vanished", [])) | (prev_seen - set(current))) - set(current)
     meta["vanished"] = sorted(vanished)
     meta["seen"] = sorted(current)
     if vanished:
-        print(f"PERHATIAN: {len(vanished)} model pernah ada tapi sekarang TIDAK ada di {LIST_FILE} "
-              f"(contoh: {', '.join(sorted(vanished)[:5])}). Bukan gagal tes, tapi hilang dari daftar 9Router.\n")
+        print(f"Notice: {len(vanished)} previously listed model(s) are no longer in {LIST_FILE}.")
 
     models_state = state["models"]
     todo = []
-    for m in current:
-        p = provider_of(m)
-        if (only and p not in only) or p in skip:
+    for model in current:
+        provider = provider_of(model)
+        if (only and provider not in only) or provider in skip:
             continue
-        prev = models_state.get(m)
-        if args.all or prev is None or prev["status"] in RETRY_STATUSES:
-            todo.append(m)
+        previous = models_state.get(model)
+        if args.all or previous is None or previous.get("status") in RETRY_STATUSES:
+            todo.append(model)
     todo = interleave(todo)
 
-    print(f"Model di daftar: {len(current)} | sudah tercatat: {len(models_state)} | "
-          f"akan diuji sekarang: {len(todo)} ({args.workers} paralel, 1 per provider)")
-    print(f"Batas waktu: FAST <= {int(FAST_MAX)} dtk, NORMAL <= {int(NORMAL_MAX)} dtk, "
-          f"SLOW di atasnya, > {int(HARD_LIMIT)} dtk = TIMEOUT\n")
+    print(f"Listed: {len(current)} | recorded: {len(models_state)} | to test: {len(todo)}")
+    print(f"Workers: {args.workers} | timeout: {args.timeout:g}s | attempts: {args.attempts} | gap: {args.gap:g}s")
+    print(f"Speed tiers: FAST <= {FAST_MAX:g}s | NORMAL <= {NORMAL_MAX:g}s | SLOW above\n")
 
     counter = {"n": 0}
 
-    def on_probe(model_id, result):
+    def on_probe(model, result):
         counter["n"] += 1
         with _state_lock:
-            prev = models_state.get(model_id, {})
-            hist = (prev.get("history", []) + [result["status"]])[-3:]
-            entry = {**result, "history": hist, "tested_at": now()}
-            if result["status"] == "OK" and prev.get("tools") is not None:
-                entry["tools"] = prev["tools"]
-            models_state[model_id] = entry
+            previous = models_state.get(model, {})
+            history = (previous.get("history", []) + [result["status"]])[-3:]
+            entry = {**result, "history": history, "tested_at": now()}
+            if result["status"] == "OK" and previous.get("tools") is not None:
+                entry["tools"] = previous["tools"]
+            models_state[model] = entry
             save_state(state)
-        info = f"{result.get('tier')} {result.get('latency')}s" if result["status"] == "OK" \
-            else (result.get("reason") or "")
-        print(f"[{counter['n']}/{len(todo)}] {model_id:<52} {result['status']:<14} {info}")
 
-    def on_tools(model_id, outcome):
+        status = result["status"]
+        code = "32" if status == "OK" else ("33" if status in ("TRANSIENT", "TIMEOUT", "THROTTLED_SKIP", "EMPTY") else "31")
+        label = Colors.paint(f"{status:<14}", code)
+        info = f"{result.get('tier')} {result.get('latency')}s" if status == "OK" else result.get("reason", "")
+        print(f"[{counter['n']}/{len(todo)}] {model:<54} {label} {info}", flush=True)
+
+    def on_tools(model, outcome):
         with _state_lock:
-            models_state[model_id]["tools"] = outcome
-            save_state(state)
-        print(f"[tools] {model_id:<52} {'ya' if outcome is True else outcome if outcome == 'error' else 'TIDAK'}")
+            if model in models_state:
+                models_state[model]["tools"] = outcome
+                save_state(state)
+        label = "YES" if outcome is True else "NO" if outcome is False else "ERROR"
+        print(f"[tools] {model:<54} {label}", flush=True)
 
     interrupted = False
     try:
         if todo:
-            run_pool(todo, probe_worker, args.workers, on_probe)
+            run_pool(
+                todo,
+                lambda model: probe_worker(model, args.timeout, args.attempts, args.gap),
+                args.workers,
+                on_probe,
+            )
         if args.tools:
-            targets = [m for m, r in models_state.items()
-                       if r["status"] == "OK" and r.get("tools") is None
-                       and (not only or provider_of(m) in only) and provider_of(m) not in skip]
+            targets = [
+                model for model, result in models_state.items()
+                if result.get("status") == "OK" and result.get("tools") is None
+                and (not only or provider_of(model) in only) and provider_of(model) not in skip
+            ]
             targets = interleave(targets)
-            print(f"\nUji tool-calling untuk {len(targets)} model OK ...")
-            run_pool(targets, tools_worker, args.workers, on_tools)
+            print(f"\nTesting tool-calling for {len(targets)} successful model(s)...")
+            run_pool(
+                targets,
+                lambda model: tools_worker(model, args.timeout, args.gap),
+                args.workers,
+                on_tools,
+            )
     except KeyboardInterrupt:
         interrupted = True
-        print("\nDihentikan manual. Progres sudah tersimpan; jalankan lagi untuk melanjutkan.")
+        print("\nStopped. Progress has been saved; run the same command to resume.")
     finally:
         with _state_lock:
             save_state(state)
             write_report(state)
 
     print_summary(state)
-    ok = sum(1 for r in models_state.values() if r["status"] == "OK")
-    print(f"\nTotal OK: {ok}/{len(models_state)}. Laporan: {REPORT_FILE} | data mesin: {STATE_FILE}")
+    successful = sum(1 for result in models_state.values() if result.get("status") == "OK")
+    print(f"\nSuccessful models: {successful}/{len(models_state)}")
+    print(f"Report: {REPORT_FILE} | detailed state: {STATE_FILE}")
     if interrupted:
-        os._exit(130)  # jangan menunggu thread yang masih menunggu jawaban provider
+        sys.stdout.flush()
+        os._exit(130)
 
 
 if __name__ == "__main__":
