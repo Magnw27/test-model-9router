@@ -360,10 +360,21 @@ def interleave(models):
 
 
 def run_pool(items, fn, workers, on_result):
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    """Run bounded workers and return quickly on Ctrl+C."""
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = [executor.submit(fn, item) for item in items]
         for future in as_completed(futures):
             on_result(*future.result())
+    except KeyboardInterrupt:
+        # main() saves current progress before exiting; don't block on in-flight network calls.
+        executor.shutdown(wait=False)
+        raise
+    except Exception:
+        executor.shutdown(wait=False)
+        raise
+    else:
+        executor.shutdown(wait=True)
 
 
 def main():
