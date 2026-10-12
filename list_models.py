@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("NINEROUTER_BASE_URL", "").strip().rstrip("/")
-API_KEY = os.getenv("NINEROUTER_API_KEY", "").strip()
+BASE_URL = (os.getenv("OMNIROUTE_BASE_URL") or os.getenv("NINEROUTER_BASE_URL", "")).strip().rstrip("/")
+API_KEY = (os.getenv("OMNIROUTE_API_KEY") or os.getenv("NINEROUTER_API_KEY", "")).strip()
 OUTPUT_FILE = "all_models.txt"
 
 
@@ -18,7 +18,7 @@ def fail(message, code=1):
 
 
 def main():
-    if not BASE_URL or not API_KEY or API_KEY == "isi_api_key_9router_di_sini":
+    if not BASE_URL or not API_KEY or API_KEY.lower() in ("isi_api_key_9router_di_sini", "isi_api_key_omniroute_di_sini", "api_key_milikmu"):
         fail("Isi NINEROUTER_BASE_URL dan NINEROUTER_API_KEY di file .env.")
     if not BASE_URL.startswith(("http://", "https://")):
         fail("NINEROUTER_BASE_URL harus diawali http:// atau https://.")
