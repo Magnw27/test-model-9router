@@ -30,7 +30,8 @@ RETRY_CAP = 15.0
 BREAKER_LIMIT = 4
 DEFAULT_GAP = 0.35
 PROVIDER_GAP = {}
-RETRY_STATUSES = {"TRANSIENT", "THROTTLED_SKIP"}
+RETRY_STATUSES = {"TRANSIENT", "THROTTLED_SKIP", "TIMEOUT", "EMPTY"}
+SAVE_EVERY = 5
 KNOWN_COMBOS = set()
 
 BLOCK_RULES = [
@@ -267,9 +268,10 @@ def write_report(state):
     for model, result in models.items():
         by_status[result.get("status", "UNKNOWN")].append(model)
 
+    timeout_limit = state.get("meta", {}).get("last_config", {}).get("timeout", HARD_LIMIT)
     lines = [
         f"MODEL TEST REPORT ({now()})",
-        f"Recorded: {len(models)} | timeout: {HARD_LIMIT:g}s | "
+        f"Recorded: {len(models)} | timeout: {timeout_limit:g}s | "
         f"FAST <= {FAST_MAX:g}s, NORMAL <= {NORMAL_MAX:g}s, SLOW above",
         "",
     ]
@@ -417,6 +419,10 @@ def main():
     current = [model for model in listed if model not in KNOWN_COMBOS]
     state = load_state()
     meta = state["meta"]
+    meta["last_config"] = {
+        "workers": args.workers, "timeout": args.timeout,
+        "attempts": args.attempts, "gap": args.gap,
+    }
     prev_seen = set(meta.get("seen", [])) or names_from_report(REPORT_FILE)
     vanished = (set(meta.get("vanished", [])) | (prev_seen - set(current))) - set(current)
     meta["vanished"] = sorted(vanished)
@@ -440,6 +446,13 @@ def main():
     print(f"Speed tiers: FAST <= {FAST_MAX:g}s | NORMAL <= {NORMAL_MAX:g}s | SLOW above\n")
 
     counter = {"n": 0}
+    save_counter = {"n": 0}
+
+    def checkpoint_if_due():
+        save_counter["n"] += 1
+        if save_counter["n"] >= SAVE_EVERY:
+            save_state(state)
+            save_counter["n"] = 0
 
     def on_probe(model, result):
         counter["n"] += 1
@@ -450,7 +463,7 @@ def main():
             if result["status"] == "OK" and previous.get("tools") is not None:
                 entry["tools"] = previous["tools"]
             models_state[model] = entry
-            save_state(state)
+            checkpoint_if_due()
 
         status = result["status"]
         code = "32" if status == "OK" else ("33" if status in ("TRANSIENT", "TIMEOUT", "THROTTLED_SKIP", "EMPTY") else "31")
@@ -462,7 +475,7 @@ def main():
         with _state_lock:
             if model in models_state:
                 models_state[model]["tools"] = outcome
-                save_state(state)
+                checkpoint_if_due()
         label = "YES" if outcome is True else "NO" if outcome is False else "ERROR"
         print(f"[tools] {model:<54} {label}", flush=True)
 
