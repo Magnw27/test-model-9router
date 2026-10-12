@@ -1,6 +1,6 @@
-# 9Router Model Tester & Benchmark
+# OmniRoute Model Tester & Benchmark
 
-Pemindai dan benchmark model untuk endpoint API yang kompatibel dengan OpenAI di 9Router. Proyek ini dirancang agar tetap ringan di **Termux/Android**, Linux, dan Windows.
+Pemindai dan benchmark model untuk endpoint API yang kompatibel dengan OpenAI di OmniRoute. Proyek ini dirancang agar tetap ringan di **Termux/Android**, Linux, dan Windows.
 
 ## Fitur
 
@@ -35,11 +35,11 @@ nano .env
 Isi konfigurasi di dalam **.env**:
 
 ~~~env
-NINEROUTER_BASE_URL=http://127.0.0.1:20128/v1
-NINEROUTER_API_KEY=API_KEY_MILIKMU
+OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
+OMNIROUTE_API_KEY=API_KEY_MILIKMU
 ~~~
 
-**Penting tentang alamat server:** **127.0.0.1** hanya mengarah ke perangkat yang menjalankan skrip. Jika 9Router berjalan di PC lain, ganti host dengan IP lokal PC tersebut, misalnya **http://192.168.1.10:20128/v1**, lalu pastikan firewall dan konfigurasi server mengizinkan koneksi dari perangkatmu. Port **20128** adalah contoh; gunakan port API yang benar dari konfigurasi 9Router-mu.
+**Penting tentang alamat server:** **127.0.0.1** hanya mengarah ke perangkat yang menjalankan skrip. Jika OmniRoute berjalan di PC lain, ganti host dengan IP lokal PC tersebut, misalnya **http://192.168.1.10:20128/v1**, lalu pastikan firewall dan konfigurasi server mengizinkan koneksi dari perangkatmu. Port **20128** adalah contoh; gunakan port API yang benar dari konfigurasi 9Router-mu.
 
 Jangan mengunggah file **.env** atau membagikan API key. File **.env** sudah masuk **.gitignore**.
 
@@ -66,6 +66,9 @@ Contoh opsi:
 ~~~bash
 # Lebih ringan untuk koneksi/ponsel yang lambat
 python test_all_models.py --workers 2 --timeout 30
+
+# Sapuan cepat: 12 worker, timeout 12 detik, satu percobaan per model
+python test_all_models.py --quick
 
 # Lebih cepat, tetapi berpotensi lebih mudah terkena rate limit
 python test_all_models.py --workers 6 --timeout 25 --attempts 1 --gap 0.2
@@ -145,3 +148,45 @@ Hanya dua dependensi Python:
 ## Lisensi
 
 MIT.
+
+## 4. Mode khusus: tes semua model gratis
+
+Jalankan mode ini secara terpisah dari benchmark biasa:
+
+~~~bash
+python test_free_models.py
+~~~
+
+Script ini mengambil katalog terbaru dari endpoint **/models**, lalu hanya memasukkan model yang secara eksplisit dikenali gratis berdasarkan salah satu hal berikut:
+
+- ID model berakhiran **:free** atau **-free**.
+- Metadata API menyatakan **free=true** / **is_free=true** atau memiliki tag **free**.
+- Metadata pricing secara eksplisit menunjukkan biaya input dan output sama dengan nol.
+
+Model dengan informasi harga yang tidak jelas **tidak otomatis dianggap gratis**. Beberapa gateway tidak menyertakan harga atau label free di endpoint model; jika begitu, script akan memberi tahu bahwa katalog tersebut tidak cukup untuk memastikan status gratis.
+
+Default mode gratis lebih cepat: 8 worker, timeout 12 detik, dan satu percobaan per model. Hasil disimpan terpisah agar tidak tercampur dengan benchmark biasa:
+
+- **free_models.txt** — ID model gratis yang teridentifikasi.
+- **free_models_catalog.json** — metadata model dan alasan klasifikasi gratis.
+- **free_test_state.json** — progres benchmark yang bisa dilanjutkan.
+- **free_work_models.txt** — model gratis yang berhasil, terurut dari respons tercepat.
+- **free_test_results.txt** — laporan lengkap, termasuk model yang gagal.
+
+Opsi:
+
+~~~bash
+# Lebih ringan untuk ponsel atau koneksi lambat
+python test_free_models.py --workers 3 --timeout 10
+
+# Lebih banyak percobaan jika jaringan tidak stabil (lebih lambat)
+python test_free_models.py --attempts 2
+
+# Gunakan katalog free_models.txt yang sudah tersimpan, tanpa mengambil katalog ulang
+python test_free_models.py --no-refresh
+
+# Paksa tes ulang model yang sudah tercatat
+python test_free_models.py --all
+~~~
+
+**Catatan:** label gratis dari katalog tidak menjamin provider selalu tersedia, tidak terkena rate limit, atau memiliki kuota tanpa batas. Script hanya mengukur apakah model dapat merespons melalui endpoint dan API key yang kamu konfigurasi.
