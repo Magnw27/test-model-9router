@@ -263,6 +263,8 @@ def main():
             print(f"[{counter}/{len(todo)}] {model:<54} {color(status, '32' if status == 'OK' else '33' if status in ('TIMEOUT','TRANSIENT','EMPTY') else '31')} {suffix}", flush=True)
     except KeyboardInterrupt:
         interrupted = True
+        for pending in futures:
+            pending.cancel()
         print("\nStopping; saving completed results...")
     finally:
         pool.shutdown(wait=True)
