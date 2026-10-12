@@ -1,4 +1,4 @@
-"""Download the available model IDs from a 9Router OpenAI-compatible endpoint."""
+"""Download the available model IDs from an OmniRoute-compatible endpoint."""
 import os
 import sys
 
@@ -32,9 +32,9 @@ def main():
             timeout=(8, 25),
         )
     except requests.exceptions.Timeout:
-        fail("Koneksi timeout. Pastikan 9Router hidup, port benar, dan server bisa dijangkau.")
+        fail("Koneksi timeout. Pastikan OmniRoute hidup, port benar, dan server bisa dijangkau.")
     except requests.exceptions.RequestException as exc:
-        fail(f"Tidak bisa menghubungi 9Router: {exc}")
+        fail(f"Tidak bisa menghubungi OmniRoute: {exc}")
 
     if not response.ok:
         hint = {
