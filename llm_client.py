@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("NINEROUTER_BASE_URL", "").strip().rstrip("/")
-API_KEY = os.getenv("NINEROUTER_API_KEY", "").strip()
+BASE_URL = (os.getenv("OMNIROUTE_BASE_URL") or os.getenv("NINEROUTER_BASE_URL", "")).strip().rstrip("/")
+API_KEY = (os.getenv("OMNIROUTE_API_KEY") or os.getenv("NINEROUTER_API_KEY", "")).strip()
 _sessions = threading.local()
 
 
@@ -43,7 +43,7 @@ class ModelResponse:
 
 def validate_config() -> None:
     if not BASE_URL or not API_KEY or API_KEY.lower() in (
-        "isi_api_key_9router_di_sini", "api_key_milikmu", "enter_your_9router_api_key_here"
+        "isi_api_key_9router_di_sini", "api_key_milikmu", "enter_your_9router_api_key_here", "isi_api_key_omniroute_di_sini"
     ):
         raise RuntimeError(
             "Konfigurasi belum lengkap. Isi NINEROUTER_BASE_URL dan "
