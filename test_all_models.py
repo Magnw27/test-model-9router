@@ -389,11 +389,22 @@ def main():
     parser.add_argument("--only", default="", help="provider allowlist, comma-separated")
     parser.add_argument("--skip", default="", help="providers to skip, comma-separated")
     parser.add_argument("--tools", action="store_true", help="test tool-calling on successful models")
-    parser.add_argument("--workers", type=int, default=4, help="parallel providers (default: 4)")
-    parser.add_argument("--timeout", type=float, default=HARD_LIMIT, help="read timeout seconds (default: 45)")
-    parser.add_argument("--attempts", type=int, default=MAX_ATTEMPTS, help="attempts per model (default: 2)")
-    parser.add_argument("--gap", type=float, default=DEFAULT_GAP, help="seconds between same-provider calls")
+    parser.add_argument("--quick", action="store_true", help="fast sweep: 12 workers, 12s timeout, one attempt, no gap")
+    parser.add_argument("--workers", type=int, default=None, help="parallel providers (default: 4, or 12 with --quick)")
+    parser.add_argument("--timeout", type=float, default=None, help="read timeout seconds (default: 45, or 12 with --quick)")
+    parser.add_argument("--attempts", type=int, default=None, help="attempts per model (default: 2, or 1 with --quick)")
+    parser.add_argument("--gap", type=float, default=None, help="seconds between same-provider calls (default: 0.35, or 0 with --quick)")
     args = parser.parse_args()
+
+    args.workers = args.workers if args.workers is not None else (12 if args.quick else 4)
+    args.timeout = args.timeout if args.timeout is not None else (12.0 if args.quick else HARD_LIMIT)
+    args.attempts = args.attempts if args.attempts is not None else (1 if args.quick else MAX_ATTEMPTS)
+    args.gap = args.gap if args.gap is not None else (0.0 if args.quick else DEFAULT_GAP)
+    if args.quick:
+        # Keep quick mode genuinely quick while still allowing explicit lower/higher settings.
+        args.timeout = min(args.timeout, 12.0)
+        args.attempts = 1
+        args.gap = 0.0
 
     if not 1 <= args.workers <= 32:
         parser.error("--workers must be between 1 and 32")
